@@ -4,78 +4,121 @@
 (def n-cols 7)
 (def n-rows 6)
 
-(def init-state {:board   (vec (repeat n-cols []))
-                 :to-move :red
-                 :winner  nil})
+;; 5 | 35  36  37  38  39  40  41
+;; 4 | 28  29  30  31  32  33  34
+;; 3 | 21  22  23  24  25  26  27
+;; 2 | 14  15  16  17  18  19  20
+;; 1 |  7   8   9  10  11  12  13
+;; 0 |  0   1   2   3   4   5   6
+;;   +---------------------------
+;;      0   1   2   3   4   5   6
 
-(defn counter
+(defn xy->ix
+  [[x y]]
+  (+ x (* y n-cols)))
+
+(defn ix->xy
+  [ix]
+  [(rem ix n-cols) (quot ix n-cols)])
+
+(defn row
+  [y]
+  (for [x (range n-cols)] (xy->ix [x y])))
+
+(defn col
+  [x]
+  (for [y (range n-rows)] (xy->ix [x y])))
+
+(def init-state {:board     (vec (repeat (* n-rows n-cols) nil))
+                 :to-move   :red
+                 :last-move nil
+                 :winner    nil})
+
+(defn next-free-pos
+  [board x]
+  (first (filter (comp nil? board)
+                 (for [y (range n-rows)] (xy->ix [x y])))))
+
+(def valid-move? (comp not nil? next-free-pos))
+
+(defn on-board?
+  [[x y]]
+  (and (< -1 x n-cols)
+       (< -1 y n-rows)))
+
+(defn add-delta
+  [x y dx dy]
+  [(+ x dx) (+ y dy)])
+
+(defn overlapping-row
+  [[x y]]
+  (filter on-board? (for [dx (range -3 4)]
+                      (add-delta x y dx 0))))
+
+(defn overlapping-col
+  [[x y]]
+  (filter on-board? (for [dy (range -3 4)]
+                      (add-delta x y 0 dy))))
+
+(defn overlapping-l-r-diag
+  [[x y]]
+  (filter on-board? (for [d (range -3 4)]
+                      (add-delta x y d d))))
+
+(defn overlapping-r-l-diag
+  [[x y]]
+  (filter on-board? (for [d (range -3 4)]
+                      (add-delta x y d (- d)))))
+
+(defn winning-candidates
+  [ix]
+  (let [xy (ix->xy ix)]
+    (mapcat (comp (partial partition 4 1)
+                  (partial map xy->ix))
+            [(overlapping-row xy)
+             (overlapping-col xy)
+             (overlapping-l-r-diag xy)
+             (overlapping-r-l-diag xy)])))
+
+(defn win-for?
+  [to-move board positions]
+  (every? #(= (board %) to-move) positions))
+
+(defn check-win
+  [{:keys [board to-move last-move] :as state}]
+  (if (some (partial win-for? to-move board)
+            (winning-candidates last-move))
+    (assoc state :winner to-move)
+    state))
+
+(defn toggle-player
+  [x]
+  (case x :red :yellow :yellow :red))
+
+(defn make-move
+  [{:keys [board to-move] :as state} x]
+  {:pre [(valid-move? board x)]}
+  (let [ix (next-free-pos board x)]
+    (-> state
+        (assoc-in [:board ix] to-move)
+        (assoc :last-move ix)
+        (check-win)
+        (update :to-move toggle-player))))
+
+(defn render
   [x]
   (case x
     :red "x"
     :yellow "o"
     "."))
 
-(defn transpose [x] (apply mapv vector x))
-
 (defn show-state
-  [{:keys [board to-move] :as state}]
-  (doseq [r (range (dec n-rows) -1 -1)]
-    (println
-     (str/join " "
-               (map (fn [c] (counter (get-in board [c r])))
-                    (range n-cols)))))
-  (println (str/join " " (range n-cols))))
-
-(defn winning-move-for?
-  [player]
-  (fn [part] (every? #{player} part)))
-
-(let [rows (for [r (range n-rows)
-                 c (range (- n-cols 3))]
-             (map (fn [c] [c r]) (take 4 (iterate inc c))))
-      cols (for [c (range n-cols)
-                 r (range (- n-rows 3))]
-             (map (fn [r] [c r]) (take 4 (iterate inc r))))
-      lr-diags (for [c (range (- n-cols 3))
-                     r (range (- n-rows 3))]
-                 (map vector
-                      (take 4 (iterate inc c))
-                      (iterate inc r)))
-      rl-diags (for [c (range (dec n-cols) 2 -1)
-                     r (range (dec n-rows) 2 -1)]
-                 (map vector
-                      (take 4 (iterate dec c))
-                      (iterate dec r)))]
-  (def winning-positions
-    (concat rows cols rl-diags lr-diags)))
-
-(defn expand-winning-positions
-  [board]
-  (map (fn [coords] (map (partial get-in board) coords))
-       winning-positions))
-
-(defn check-winner
-  [{:keys [board] :as state} candidate]
-  (if (some (winning-move-for? candidate)
-            (expand-winning-positions board))
-    (assoc state :winner candidate)
-    state))
-
-(defn toggle-player
-  [u]
-  (case u :red :yellow :yellow :red))
-
-(defn valid-move?
-  [board c]
-  (and c (< (count (board c)) n-rows)))
-
-(defn make-move
-  [{:keys [board to-move] :as state} c]
-  {:pre [(valid-move? board c)]}
-  (-> state
-      (update-in [:board c] conj to-move)
-      (update :to-move toggle-player)
-      (check-winner to-move)))
+    [{:keys [board to-move] :as state}]
+    (doseq [y (reverse (range n-rows))]
+      (println
+       (str/join " " (map (comp render board #(xy->ix [% y]))
+                          (range n-cols)))))
+    (println (str/join " " (range n-cols))))
 
 (let [moves (into {} (map (fn [x] [(str x) x]) (range n-cols)))]
   (defn read-move
@@ -98,18 +141,10 @@
   [state]
   (show-state state)
   (if-let [winner (:winner state)]
-    (println "Game over! " (counter winner) " has won.")
+    (println "Game over!" (counter winner) "has won.")
     (let [move (solicit-move state)]
       (recur (make-move state move)))))
 
 (defn new-game
   []
   (game-loop init-state))
-
-(defn parse-board
-  [s]
-  (transpose
-   (reverse
-    (partition n-cols
-               (map #(case % \. nil \o :yellow \x :red)
-                    (filter #{\. \o \x} s))))))
