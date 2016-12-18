@@ -1,115 +1,139 @@
-(ns connect4.core
-  (:require [clojure.string :as str]))
+(ns connect4.core)
 
-(def n-cols 7)
 (def n-rows 6)
+(def n-cols 7)
 
-(def init-state {:board   (vec (repeat n-cols []))
-                 :to-move :red
-                 :winner  nil})
+(def init-state
+  {:to-move 0
+   :game-over? false
+   :board (vec (repeat n-cols []))})
 
-(defn counter
-  [x]
-  (case x
-    :red "x"
-    :yellow "o"
-    "."))
-
-(defn transpose [x] (apply mapv vector x))
-
-(defn show-state
-  [{:keys [board to-move] :as state}]
-  (doseq [r (range (dec n-rows) -1 -1)]
-    (println
-     (str/join " "
-               (map (fn [c] (counter (get-in board [c r])))
-                    (range n-cols)))))
-  (println (str/join " " (range n-cols))))
-
-(defn winning-move-for?
-  [player]
-  (fn [part] (every? #{player} part)))
-
-(let [rows (for [r (range n-rows)
-                 c (range (- n-cols 3))]
-             (map (fn [c] [c r]) (take 4 (iterate inc c))))
-      cols (for [c (range n-cols)
-                 r (range (- n-rows 3))]
-             (map (fn [r] [c r]) (take 4 (iterate inc r))))
-      lr-diags (for [c (range (- n-cols 3))
-                     r (range (- n-rows 3))]
-                 (map vector
-                      (take 4 (iterate inc c))
-                      (iterate inc r)))
-      rl-diags (for [c (range (dec n-cols) 2 -1)
-                     r (range (dec n-rows) 2 -1)]
-                 (map vector
-                      (take 4 (iterate dec c))
-                      (iterate dec r)))]
-  (def winning-positions
-    (concat rows cols rl-diags lr-diags)))
-
-(defn expand-winning-positions
+(defn possible-moves
   [board]
-  (map (fn [coords] (map (partial get-in board) coords))
-       winning-positions))
-
-(defn check-winner
-  [{:keys [board] :as state} candidate]
-  (if (some (winning-move-for? candidate)
-            (expand-winning-positions board))
-    (assoc state :winner candidate)
-    state))
+  (for [i (range n-cols)
+        :when (< (count (nth board i)) n-rows)]
+    i))
 
 (defn toggle-player
-  [u]
-  (case u :red :yellow :yellow :red))
+  [player]
+  (case player 0 1 1 0))
 
-(defn valid-move?
-  [board c]
-  (and c (< (count (board c)) n-rows)))
+(defn get-x-y
+  [board x y]
+  (get-in board [x y] "."))
+
+(def deltas
+  [[[-3 0]  [-2 0]  [-1 0]  [0 0] [1 0]  [2 0]  [3 0]]
+   [[0 -3]  [0 -2]  [0 -1]  [0 0] [0 1]  [0 2]  [0 3]]
+   [[-3 -3] [-2 -2] [-1 -1] [0 0] [1 1]  [2 2]  [3 3]]
+   [[-3 3]  [-2 2]  [-1 1]  [0 0] [1 -1] [2 -2] [3 -3]]])
+
+(defn last-move-won?
+  [{:keys [to-move board]} last-x]
+  (let [player (toggle-player to-move)
+        last-y (dec (count (get board last-x)))]
+    (some
+     (fn [[a b c d]] (= a b c d player))
+     (mapcat
+      (fn [delta]
+        (let [xs (map (fn [[dx dy]]
+                        (get-x-y board
+                                 (+ last-x dx)
+                                 (+ last-y dy)))
+                      delta)]
+          (partition 4 1 xs)))
+      deltas))))
+
+(defn check-game-over
+  [state move]
+  (cond
+    (last-move-won? state move)
+    (assoc state
+           :game-over? true
+           :winner (toggle-player (:to-move state)))
+    (empty? (possible-moves (:board state)))
+    (assoc state :game-over? true)
+    :else state))
 
 (defn make-move
-  [{:keys [board to-move] :as state} c]
-  {:pre [(valid-move? board c)]}
+  [{:keys [to-move board] :as state} move]
+  {:pre [(some #{move} (possible-moves board))]}
   (-> state
-      (update-in [:board c] conj to-move)
       (update :to-move toggle-player)
-      (check-winner to-move)))
+      (update-in [:board move] conj to-move)
+      (check-game-over move)))
 
-(let [moves (into {} (map (fn [x] [(str x) x]) (range n-cols)))]
-  (defn read-move
-    []
-    (let [x (read-line)]
-      (when-let [move (moves x)]
-        move))))
+(defn get-row
+  [board r]
+  (mapv #(get-x-y board % r) (range n-cols)))
 
-(defn solicit-move
-  [state]
-  (println (str (counter (:to-move state)) " to move: "))
-  (let [move (read-move)]
-    (if (valid-move? (:board state) move)
-      move
-      (do
-        (println "That is not a valid move!")
-        (recur state)))))
+(defn print-board
+  [board]
+  (println "\n")
+  (doseq [r (reverse (range n-rows))]
+    (println (get-row board r))))
 
-(defn game-loop
-  [state]
-  (show-state state)
-  (if-let [winner (:winner state)]
-    (println "Game over! " (counter winner) " has won.")
-    (let [move (solicit-move state)]
-      (recur (make-move state move)))))
-
-(defn new-game
-  []
-  (game-loop init-state))
+(defn transpose [xs] (apply map vector xs))
 
 (defn parse-board
   [s]
-  (transpose
-   (reverse
-    (partition n-cols
-               (map #(case % \. nil \o :yellow \x :red)
-                    (filter #{\. \o \x} s))))))
+  (into []
+        (comp
+         (map (partial remove #{"."}))
+         (map (partial map {"0" 0 "1" 1}))
+         (map reverse)
+         (map vec))
+        (transpose (partition n-cols (re-seq #"[01\.]" s)))))
+
+(defprotocol IPlayer
+  (next-move [this {:keys [to-move board game-over? winner]}]))
+
+(defrecord RandomPlayer []
+  IPlayer
+  (next-move [this {:keys [to-move board game-over?]}]
+    (when-not game-over?
+      (rand-nth (possible-moves board)))))
+
+(defn play-game
+  "Play out a game to completion. Return a list of moves and the final
+  state in the last position."
+  [player1 player2]
+  (letfn [(step [state]
+            (lazy-seq
+             (if (:game-over? state)
+               (list state)
+               (let [player (case (:to-move state)
+                              0 player1
+                              1 player2)
+                     move (next-move player state)
+                     state' (make-move state move)]
+                 (cons move (step state'))))))]
+    (step init-state)))
+
+(defn play-game-outcome
+  "Play out a game to completion. Return the final state."
+  [player1 player2]
+  (first
+   (filter :game-over?
+           (iterate (fn [state]
+                      (let [player (case (:to-move state)
+                                     0 player1
+                                     1 player2)
+                            move (next-move player state)]
+                        (make-move state move)))
+                    init-state))))
+
+(comment
+
+  (let [xs (play-game (RandomPlayer.) (RandomPlayer.))
+        moves (butlast xs)
+        state (last xs)]
+    (print-board (:board state))
+    (println moves)
+    (println "Winner" (:winner state)))
+
+  (frequencies (repeatedly 1000 (comp :winner #(play-game-outcome (RandomPlayer.) (RandomPlayer.)))))
+
+
+
+  )
