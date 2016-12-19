@@ -4,9 +4,9 @@
 (def n-cols 7)
 
 (def init-state
-  {:to-move 0
+  {:to-move    0
    :game-over? false
-   :board (vec (repeat n-cols []))})
+   :board      (vec (repeat n-cols []))})
 
 (defn possible-moves
   [board]
@@ -52,7 +52,7 @@
            :game-over? true
            :winner (toggle-player (:to-move state)))
     (empty? (possible-moves (:board state)))
-    (assoc state :game-over? true)
+    (assoc state :game-over? true :winner 2)
     :else state))
 
 (defn make-move
@@ -97,7 +97,7 @@
 (defn play-game
   "Play out a game to completion. Return a list of moves and the final
   state in the last position."
-  [player1 player2]
+  [player1 player2 init-state]
   (letfn [(step [state]
             (lazy-seq
              (if (:game-over? state)
@@ -112,7 +112,7 @@
 
 (defn play-game-outcome
   "Play out a game to completion. Return the final state."
-  [player1 player2]
+  [player1 player2 init-state]
   (first
    (filter :game-over?
            (iterate (fn [state]
@@ -123,16 +123,86 @@
                         (make-move state move)))
                     init-state))))
 
+(defn monte-carlo-outcomes
+  [state n-iters move]
+  (let [state (make-move state move)]
+    (frequencies
+     (repeatedly n-iters
+                 (comp :winner
+                       #(play-game-outcome (RandomPlayer.) (RandomPlayer.) state))))))
+
+(defrecord MonteCarloPlayer [n-iters]
+  IPlayer
+  (next-move [this {:keys [to-move board game-over?] :as state}]
+    (when-not game-over?
+      (let [candidates (possible-moves board)
+            outcomes   (zipmap candidates
+                               (map (partial monte-carlo-outcomes state n-iters) candidates))]
+        (key (first (reverse (sort-by (comp (juxt #(get % to-move) #(get % 2)) val)
+                                      outcomes))))))))
+
+(defn bfs
+  [state max-depth]
+  (loop [queue (conj clojure.lang.PersistentQueue/EMPTY {:depth 0 :state state}) outcomes []]
+    (if (empty? queue)
+      outcomes
+      (let [{:keys [depth state] :as node} (peek queue)]
+        (cond
+          (= depth max-depth) (recur (pop queue) (conj outcomes node))
+          (:game-over? state) (recur (pop queue) (conj outcomes node))
+          :else (recur (into (pop queue)
+                             (comp
+                              (map (partial make-move state))
+                              (map (fn [state] {:depth (inc depth) :state state})))
+                             (possible-moves (:board state)))
+                       outcomes))))))
+
+(defn score-outcome
+  [player {:keys [depth state]}]
+  (cond
+    (= (:winner state) player) (/ 10 (inc depth))
+    (= (:winner state) (toggle-player player)) (/ -100 (inc depth))
+    :else 0))
+
+(defn best-move
+  [player outcomes]
+  (rand-nth (:best-moves
+             (reduce (fn [accum [move xs]]
+                       (let [score (reduce + 0 (map (partial score-outcome player) xs))]
+                         (cond
+                           (or (nil? (:best-score accum)) (> score (:best-score accum)))
+                           {:best-score score :best-moves [move]}
+
+                           (= score (:best-score accum))
+                           (update accum :best-moves conj move)
+
+                           :else accum)))
+                     {:best-score nil :best-moves []}
+                     outcomes))))
+
+(defrecord LookAheadPlayer [depth]
+  IPlayer
+  (next-move [this {:keys [to-move board game-over?] :as state}]
+    (when-not game-over?
+      (let [outcomes (into {}
+                           (map (fn [move] [move (bfs (make-move state move) depth)]))
+                           (possible-moves board))]
+        (best-move to-move outcomes)))))
+
 (comment
 
-  (let [xs (play-game (RandomPlayer.) (RandomPlayer.))
+  (next-move (LookAheadPlayer. 5) init-state)
+
+  (let [xs (play-game (RandomPlayer.) (LookAheadPlayer. 1) init-state)
         moves (butlast xs)
         state (last xs)]
     (print-board (:board state))
     (println moves)
     (println "Winner" (:winner state)))
 
-  (frequencies (repeatedly 1000 (comp :winner #(play-game-outcome (RandomPlayer.) (RandomPlayer.)))))
+
+  (frequencies (repeatedly 20 (comp :winner #(play-game-outcome (MonteCarloPlayer. 10) (LookAheadPlayer. 3) init-state))))
+
 
 
 
